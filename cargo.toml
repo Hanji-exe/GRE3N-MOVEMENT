@@ -1,8 +1,8 @@
 [package]
-name = "relaid"
+name = "guard3n"
 version = "0.1.0"
 edition = "2021"
-description = "Soroban-powered disaster relief disbursement for Filipino typhoon survivors"
+description = "Soroban-powered community tree funding and park revival for every Filipino"
 license = "MIT"
 
 [lib]

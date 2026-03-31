@@ -9,248 +9,368 @@ use soroban_sdk::{
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
-pub enum RelAIDError {
-    NotInitialized         = 1,
-    AlreadyInitialized     = 2,
-    Unauthorized           = 3,
-    AlreadyRegistered      = 4,
-    BeneficiaryNotFound    = 5,
-    GeotakNotSubmitted     = 6,
-    GeotakNotVerified      = 7,
-    InsufficientFunds      = 8,
-    InvalidAmount          = 9,
-    GeotakAlreadySubmitted = 10,
+pub enum Guard3nError {
+    NotInitialized          = 1,
+    AlreadyInitialized      = 2,
+    Unauthorized            = 3,
+    ParkAlreadyRegistered   = 4,
+    ParkNotFound            = 5,
+    MilestoneNotSubmitted   = 6,
+    MilestoneNotVerified    = 7,
+    InsufficientFunds       = 8,
+    InvalidAmount           = 9,
+    MilestoneAlreadySubmitted = 10,
+    ThresholdNotMet         = 11,
+    DonorNotFound           = 12,
 }
 
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
-    EscrowBalance,
-    Beneficiary(String),
-    Geotag(String),
+    TreasuryBalance,
+    Park(String),
+    Donor(Address),
+    Milestone(String),
 }
 
+// Represents a real park or urban green area
 #[contracttype]
 #[derive(Clone, Debug)]
-pub struct Beneficiary {
-    pub philsys_barangay_id: String,
-    pub wallet: Address,
-    pub geotag_submitted: bool,
-    pub geotag_verified: bool,
+pub struct Park {
+    pub park_id: String,          // e.g. "QC-MEMORIAL-001"
+    pub name: String,             // e.g. "Quezon Memorial Circle"
+    pub funding_goal: i128,       // target amount in stroops
+    pub current_funding: i128,    // total donated so far
+    pub tree_count: u32,          // verified trees planted
+    pub milestone_submitted: bool,
+    pub milestone_verified: bool,
     pub total_released: i128,
 }
 
+// Represents a donor's contribution record
 #[contracttype]
 #[derive(Clone, Debug)]
-pub struct Geotag {
-    pub disaster_type: String,
+pub struct Donor {
+    pub wallet: Address,
+    pub total_donated: i128,
+    pub tokens_earned: i128,
+    pub trees_funded: u32,
+}
+
+// Photo proof of planting submitted by barangay
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct Milestone {
+    pub photo_hash: String,   // hash of the geotagged photo proof
     pub lat: i64,
     pub lng: i64,
+    pub tree_species: String,
 }
 
 #[contract]
-pub struct RelAIDContract;
+pub struct Guard3nContract;
 
 #[contractimpl]
-impl RelAIDContract {
+impl Guard3nContract {
 
+    // Initialize the contract with an admin address
+    // Called once on deployment — sets admin and zeroes treasury
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic_with_error!(&env, RelAIDError::AlreadyInitialized);
+            panic_with_error!(&env, Guard3nError::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::EscrowBalance, &0_i128);
-        log!(&env, "RelAID initialized — admin: {}", admin);
+        env.storage().instance().set(&DataKey::TreasuryBalance, &0_i128);
+        log!(&env, "GUARD3N initialized — admin: {}", admin);
     }
 
-    pub fn register_beneficiary(
+    // Admin registers a new park with a funding goal
+    // Parks must be registered before anyone can donate to them
+    pub fn register_park(
         env: Env,
         caller: Address,
-        philsys_barangay_id: String,
-        wallet: Address,
+        park_id: String,
+        name: String,
+        funding_goal: i128,
     ) {
         caller.require_auth();
         Self::assert_admin(&env, &caller);
 
-        if env.storage().persistent().has(&DataKey::Beneficiary(philsys_barangay_id.clone())) {
-            panic_with_error!(&env, RelAIDError::AlreadyRegistered);
+        if env.storage().persistent().has(&DataKey::Park(park_id.clone())) {
+            panic_with_error!(&env, Guard3nError::ParkAlreadyRegistered);
         }
 
-        let beneficiary = Beneficiary {
-            philsys_barangay_id: philsys_barangay_id.clone(),
-            wallet,
-            geotag_submitted: false,
-            geotag_verified: false,
+        if funding_goal <= 0 {
+            panic_with_error!(&env, Guard3nError::InvalidAmount);
+        }
+
+        let park = Park {
+            park_id: park_id.clone(),
+            name,
+            funding_goal,
+            current_funding: 0,
+            tree_count: 0,
+            milestone_submitted: false,
+            milestone_verified: false,
             total_released: 0,
         };
 
         env.storage().persistent().set(
-            &DataKey::Beneficiary(philsys_barangay_id.clone()),
-            &beneficiary,
+            &DataKey::Park(park_id.clone()),
+            &park,
         );
 
         env.events().publish(
-            (symbol_short!("register"),),
-            philsys_barangay_id,
+            (symbol_short!("park_reg"),),
+            park_id,
         );
     }
 
-    pub fn deposit_funds(env: Env, caller: Address, amount: i128) {
-        caller.require_auth();
-        Self::assert_admin(&env, &caller);
-
-        if amount <= 0 {
-            panic_with_error!(&env, RelAIDError::InvalidAmount);
-        }
-
-        let current: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::EscrowBalance)
-            .unwrap_or(0);
-
-        env.storage()
-            .instance()
-            .set(&DataKey::EscrowBalance, &(current + amount));
-
-        env.events().publish((symbol_short!("deposit"),), amount);
-        log!(&env, "Deposited {} stroops to escrow", amount);
-    }
-
-    pub fn submit_geotag(
+    // Any user donates to a specific park
+    // Mints GR3EN tokens proportional to donation
+    // 1 stroop donated = 1 GR3EN token earned
+    pub fn donate(
         env: Env,
         caller: Address,
-        philsys_barangay_id: String,
-        disaster_type: String,
+        park_id: String,
+        amount: i128,
+    ) {
+        caller.require_auth();
+
+        if amount <= 0 {
+            panic_with_error!(&env, Guard3nError::InvalidAmount);
+        }
+
+        // Update park funding
+        let mut park = Self::get_park(&env, &park_id);
+        park.current_funding += amount;
+
+        // Update treasury
+        let treasury: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TreasuryBalance)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TreasuryBalance, &(treasury + amount));
+
+        // Update or create donor record
+        let mut donor = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Donor(caller.clone()))
+            .unwrap_or(Donor {
+                wallet: caller.clone(),
+                total_donated: 0,
+                tokens_earned: 0,
+                trees_funded: 0,
+            });
+
+        donor.total_donated += amount;
+        donor.tokens_earned += amount; // 1:1 token ratio at MVP
+        donor.trees_funded += 1;
+
+        env.storage().persistent().set(
+            &DataKey::Donor(caller.clone()),
+            &donor,
+        );
+
+        env.storage().persistent().set(
+            &DataKey::Park(park_id.clone()),
+            &park,
+        );
+
+        env.events().publish(
+            (symbol_short!("donate"),),
+            (park_id.clone(), caller, amount),
+        );
+
+        log!(&env, "Donation of {} stroops to park {}", amount, park_id);
+    }
+
+    // Barangay submits photo proof of planting with GPS coordinates
+    // Only admin-authorized barangay addresses can call this
+    pub fn submit_milestone(
+        env: Env,
+        caller: Address,
+        park_id: String,
+        photo_hash: String,
         lat: i64,
         lng: i64,
+        tree_species: String,
     ) {
         caller.require_auth();
         Self::assert_admin(&env, &caller);
 
-        let mut b = Self::get_beneficiary(&env, &philsys_barangay_id);
+        let mut park = Self::get_park(&env, &park_id);
 
-        if b.geotag_submitted {
-            panic_with_error!(&env, RelAIDError::GeotakAlreadySubmitted);
+        if park.milestone_submitted {
+            panic_with_error!(&env, Guard3nError::MilestoneAlreadySubmitted);
         }
 
-        let geotag = Geotag { disaster_type, lat, lng };
+        // Check funding threshold is met before allowing milestone
+        if park.current_funding < park.funding_goal {
+            panic_with_error!(&env, Guard3nError::ThresholdNotMet);
+        }
+
+        let milestone = Milestone {
+            photo_hash,
+            lat,
+            lng,
+            tree_species,
+        };
+
         env.storage().persistent().set(
-            &DataKey::Geotag(philsys_barangay_id.clone()),
-            &geotag,
+            &DataKey::Milestone(park_id.clone()),
+            &milestone,
         );
 
-        b.geotag_submitted = true;
+        park.milestone_submitted = true;
         env.storage().persistent().set(
-            &DataKey::Beneficiary(philsys_barangay_id.clone()),
-            &b,
+            &DataKey::Park(park_id.clone()),
+            &park,
         );
 
         env.events().publish(
-            (symbol_short!("geotag"),),
-            (philsys_barangay_id.clone(), lat, lng),
+            (symbol_short!("milestone"),),
+            (park_id.clone(), lat, lng),
         );
-        log!(&env, "Geotag submitted for {}", philsys_barangay_id);
+
+        log!(&env, "Milestone submitted for park {}", park_id);
     }
 
-    pub fn verify_geotag(env: Env, caller: Address, philsys_barangay_id: String) {
+    // Admin verifies the submitted photo milestone
+    // Unlocks reward token release to donors
+    pub fn verify_milestone(
+        env: Env,
+        caller: Address,
+        park_id: String,
+        tree_count: u32,
+    ) {
         caller.require_auth();
         Self::assert_admin(&env, &caller);
 
-        let mut b = Self::get_beneficiary(&env, &philsys_barangay_id);
+        let mut park = Self::get_park(&env, &park_id);
 
-        if !b.geotag_submitted {
-            panic_with_error!(&env, RelAIDError::GeotakNotSubmitted);
+        if !park.milestone_submitted {
+            panic_with_error!(&env, Guard3nError::MilestoneNotSubmitted);
         }
 
-        b.geotag_verified = true;
+        park.milestone_verified = true;
+        park.tree_count = tree_count;
+
         env.storage().persistent().set(
-            &DataKey::Beneficiary(philsys_barangay_id.clone()),
-            &b,
+            &DataKey::Park(park_id.clone()),
+            &park,
         );
 
         env.events().publish(
             (symbol_short!("verified"),),
-            philsys_barangay_id.clone(),
+            (park_id.clone(), tree_count),
         );
-        log!(&env, "Geotag verified for {} — tranche release unlocked", philsys_barangay_id);
+
+        log!(&env, "Milestone verified for park {} — {} trees confirmed", park_id, tree_count);
     }
 
-    pub fn release_tranche(
+    // Admin releases reward tokens to a donor after milestone is verified
+    // This simulates the on-chain reward distribution
+    pub fn release_rewards(
         env: Env,
         caller: Address,
-        philsys_barangay_id: String,
-        amount: i128,
+        park_id: String,
+        donor_wallet: Address,
+        reward_amount: i128,
     ) {
         caller.require_auth();
         Self::assert_admin(&env, &caller);
 
-        if amount <= 0 {
-            panic_with_error!(&env, RelAIDError::InvalidAmount);
+        if reward_amount <= 0 {
+            panic_with_error!(&env, Guard3nError::InvalidAmount);
         }
 
-        let mut b = Self::get_beneficiary(&env, &philsys_barangay_id);
+        let park = Self::get_park(&env, &park_id);
 
-        if !b.geotag_verified {
-            panic_with_error!(&env, RelAIDError::GeotakNotVerified);
+        if !park.milestone_verified {
+            panic_with_error!(&env, Guard3nError::MilestoneNotVerified);
         }
 
-        let escrow: i128 = env
+        let treasury: i128 = env
             .storage()
             .instance()
-            .get(&DataKey::EscrowBalance)
+            .get(&DataKey::TreasuryBalance)
             .unwrap_or(0);
 
-        if escrow < amount {
-            panic_with_error!(&env, RelAIDError::InsufficientFunds);
+        if treasury < reward_amount {
+            panic_with_error!(&env, Guard3nError::InsufficientFunds);
         }
 
+        // Deduct from treasury
         env.storage()
             .instance()
-            .set(&DataKey::EscrowBalance, &(escrow - amount));
+            .set(&DataKey::TreasuryBalance, &(treasury - reward_amount));
 
-        b.total_released += amount;
+        // Update donor reward record
+        let mut donor: Donor = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Donor(donor_wallet.clone()))
+            .unwrap_or_else(|| panic_with_error!(&env, Guard3nError::DonorNotFound));
+
+        donor.tokens_earned += reward_amount;
+
         env.storage().persistent().set(
-            &DataKey::Beneficiary(philsys_barangay_id.clone()),
-            &b,
+            &DataKey::Donor(donor_wallet.clone()),
+            &donor,
         );
 
         env.events().publish(
-            (symbol_short!("release"),),
-            (philsys_barangay_id.clone(), amount),
+            (symbol_short!("reward"),),
+            (park_id, donor_wallet, reward_amount),
         );
-        log!(&env, "Released {} stroops to {} wallet", amount, philsys_barangay_id);
     }
 
-    pub fn verify_beneficiary(env: Env, philsys_barangay_id: String) -> Beneficiary {
-        Self::get_beneficiary(&env, &philsys_barangay_id)
+    // Read-only: get park details
+    pub fn get_park_info(env: Env, park_id: String) -> Park {
+        Self::get_park(&env, &park_id)
     }
 
-    pub fn get_escrow_balance(env: Env) -> i128 {
+    // Read-only: get donor details
+    pub fn get_donor_info(env: Env, donor_wallet: Address) -> Donor {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Donor(donor_wallet))
+            .unwrap_or_else(|| panic_with_error!(&env, Guard3nError::DonorNotFound))
+    }
+
+    // Read-only: get treasury balance
+    pub fn get_treasury_balance(env: Env) -> i128 {
         env.storage()
             .instance()
-            .get(&DataKey::EscrowBalance)
+            .get(&DataKey::TreasuryBalance)
             .unwrap_or(0)
     }
 
+    // Internal: assert caller is admin
     fn assert_admin(env: &Env, caller: &Address) {
         let admin: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(env, RelAIDError::NotInitialized));
+            .unwrap_or_else(|| panic_with_error!(env, Guard3nError::NotInitialized));
         if *caller != admin {
-            panic_with_error!(env, RelAIDError::Unauthorized);
+            panic_with_error!(env, Guard3nError::Unauthorized);
         }
     }
 
-    fn get_beneficiary(env: &Env, philsys_barangay_id: &String) -> Beneficiary {
+    // Internal: get park or panic
+    fn get_park(env: &Env, park_id: &String) -> Park {
         env.storage()
             .persistent()
-            .get(&DataKey::Beneficiary(philsys_barangay_id.clone()))
-            .unwrap_or_else(|| panic_with_error!(env, RelAIDError::BeneficiaryNotFound))
+            .get(&DataKey::Park(park_id.clone()))
+            .unwrap_or_else(|| panic_with_error!(env, Guard3nError::ParkNotFound))
     }
 }
 
-mod test;  // ← ONLY in lib.rs, never in test.rs
+mod test;
