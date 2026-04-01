@@ -1,15 +1,16 @@
 # GUARD3N  🌱
 ## Join the GRE3N Movement
 
-A Web3 eco-platform that lets any Filipino fund real trees, track them on a live Map, grow a virtual plant companion, and redeem GR3EN tokens into real-world vouchers — all powered by Stellar and Soroban smart contracts.
-
+A Stellar-powered eco-platform where Filipinos donate to real barangay parks, own virtual trees, and compete on a sustainability leaderboard.
 Vercel Link: https://gre-3-n-movement.vercel.app/
 
 ---
 
 ## Overview
 
-GUARD3N lets any Filipino convert ₱50 into GR3EN tokens on Stellar, assign them to a real tree in a barangay park on a live GeoMap, earn bonuses for verified photo milestones, and redeem tokens into real-world vouchers — with every step recorded transparently on a Soroban smart contract.
+**GUARD3N** is a community-driven Web3 platform built during the Stellar Bootcamp that empowers Filipinos to take real environmental action through blockchain technology. Users can donate **GRE3N**  tokens to their chosen barangay park, monitor tree growth through a live GeoMap, and collect their own virtual tree. A community leaderboard tracks which barangays are leading in sustainability efforts, while country-wide milestones celebrate collective environmental progress. Built on the Stellar (Soroban) blockchain with smart contract integration-ready architecture, **GUARD3N** turns everyday micro-donations into transparent, rewarding, and community-driven green action.
+
+_I framed it as **"integration-ready"** instead of fully implemented. Smart contract integration was designed and architected but not fully implemented due to lack of guidelines to integrate and time constrain._
 
 ---
 
