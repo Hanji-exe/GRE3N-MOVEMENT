@@ -1,7 +1,9 @@
 # GUARD3N  🌱
-## Join the GRE3N Movement*
+## Join the GRE3N Movement
 
 A Web3 eco-platform that lets any Filipino fund real trees, track them on a live Map, grow a virtual plant companion, and redeem GR3EN tokens into real-world vouchers — all powered by Stellar and Soroban smart contracts.
+
+Vercel Link: https://gre-3-n-movement.vercel.app/
 
 ---
 
