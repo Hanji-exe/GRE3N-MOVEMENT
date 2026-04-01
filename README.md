@@ -104,7 +104,7 @@ Every GR3EN token is backed by a real tree in a real park. Barangay officials su
 
 ##  Project Structure
 ```
-RELAID/
+GUARD3EN/
 ├── guard3n-frontend/                
 │   ├── app/
 │   │   ├── page.jsx                  
